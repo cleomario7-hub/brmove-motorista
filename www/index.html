@@ -43,7 +43,13 @@ async function api(path,opt={}){
 }
 function run(fn){return fn().catch(e=>{if(e.message==='Não autenticado')return logout();toast(e.message==='Failed to fetch'?'Sem conexão com o servidor':e.message)})}
 
-function stopGps(){if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}}
+const NATIVE=!!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform());
+const BG=NATIVE?Capacitor.registerPlugin('BackgroundGeolocation'):null;
+let watcher=null;
+async function stopGps(){
+  if(watcher){try{await BG.removeWatcher({id:watcher})}catch(e){}watcher=null}
+  if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}
+}
 function go(t){tab=t;clearInterval(timer);render()}
 function logout(){stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
 async function probe(){
@@ -78,18 +84,36 @@ function pendView(){
 }
 
 const pos=()=>new Promise((ok,no)=>navigator.geolocation.getCurrentPosition(p=>ok({lat:p.coords.latitude,lng:p.coords.longitude}),()=>no(new Error('Ative a localização do celular e permita o acesso')),{enableHighAccuracy:true,timeout:15000}));
-function startGps(){
-  stopGps();
-  watchId=navigator.geolocation.watchPosition(p=>{
-    if(Date.now()-lastSend<10000)return;lastSend=Date.now();
-    api('/driver/location',{method:'POST',body:{lat:p.coords.latitude,lng:p.coords.longitude}}).catch(()=>{});
-  },()=>{},{enableHighAccuracy:true});
+async function askNotif(){
+  if(!NATIVE)return;
+  try{await Capacitor.registerPlugin('LocalNotifications').requestPermissions()}catch(e){}
+}
+function send(la,ln){
+  if(Date.now()-lastSend<10000)return;lastSend=Date.now();
+  api('/driver/location',{method:'POST',body:{lat:la,lng:ln}}).catch(()=>{});
+}
+async function startGps(){
+  await stopGps();
+  if(NATIVE){
+    try{
+      watcher=await BG.addWatcher({
+        backgroundTitle:'BRMove em serviço',
+        backgroundMessage:'Compartilhando sua localização com o cliente.',
+        requestPermissions:true,stale:false,distanceFilter:15
+      },(l,err)=>{
+        if(err){if(err.code==='NOT_AUTHORIZED')toast('Permita o acesso à localização nas configurações do celular');return}
+        send(l.latitude,l.longitude);
+      });
+      return;
+    }catch(e){}
+  }
+  watchId=navigator.geolocation.watchPosition(p=>send(p.coords.latitude,p.coords.longitude),()=>{},{enableHighAccuracy:true});
 }
 function toggle(){run(async()=>{
   if(online){await api('/driver/online',{method:'POST',body:{online:false}});online=false;stopGps();return homeView()}
   const p=await pos();
   await api('/driver/online',{method:'POST',body:{online:true,lat:p.lat,lng:p.lng}});
-  online=true;startGps();homeView();
+  online=true;await askNotif();await startGps();homeView();
 })}
 
 const avail=o=>`<div class="card"><div class="st">${V[o.vehicle_type]} · ${Number(o.distance_km).toFixed(1)} km · ${money(o.price)}</div>
