@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BRMove Motorista</title>
+<style>
+:root{--r:#D62828;--tx:#1b1b1b;--mut:#6b6b6b;--ln:#e6e6e6}
+body{margin:0;font:16px system-ui,sans-serif;color:var(--tx);background:#f6f6f6;padding-bottom:calc(70px + env(safe-area-inset-bottom))}
+header{background:var(--r);color:#fff;padding:calc(14px + env(safe-area-inset-top)) 16px 14px;font-weight:800;font-size:22px}
+header small{font-weight:400;font-size:14px}
+main{padding:14px;max-width:560px;margin:auto}
+h2{margin:0 0 8px}
+.card{background:#fff;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px #0001}
+input,select{width:100%;box-sizing:border-box;padding:12px;margin:6px 0;border:1px solid var(--ln);border-radius:10px;font:inherit;background:#fff}
+button{background:var(--r);color:#fff;border:0;border-radius:10px;padding:12px 16px;font:inherit;font-weight:700;width:100%;margin-top:6px}
+button.s{background:#fff;color:var(--r);border:1px solid var(--r)}
+button.g{background:#1e8e3e}
+a.btn{display:block;text-align:center;text-decoration:none;background:#fff;color:var(--r);border:1px solid var(--r);border-radius:10px;padding:12px;font-weight:700;margin-top:6px}
+nav{position:fixed;bottom:0;left:0;right:0;display:none;background:#fff;border-top:1px solid var(--ln);padding-bottom:env(safe-area-inset-bottom)}
+nav a{flex:1;text-align:center;padding:14px 0;color:var(--mut);font-weight:600}
+nav a.on{color:var(--r)}
+.st{font-size:13px;font-weight:700;color:var(--r);margin-bottom:4px}
+#toast{position:fixed;left:16px;right:16px;bottom:84px;background:#222;color:#fff;padding:12px;border-radius:10px;display:none;text-align:center}
+</style></head>
+<body>
+<header>BRMove <small>Motorista</small></header>
+<main id="app"></main>
+<nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="hist" onclick="go('hist')">Histórico</a><a onclick="logout()">Sair</a></nav>
+<div id="toast"></div>
+<script>
+const API='https://api.fretesbsb.com.br';
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const V={moto:'🏍️ Moto',carro:'🚗 Carro',van:'🚐 Van',caminhao:'🚚 Caminhão'};
+const money=n=>'R$ '+Number(n).toFixed(2).replace('.',',');
+let token=localStorage.getItem('t'),tab='home',online=false,approved=null,timer=null,watchId=null,lastSend=0;
+
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3500)}
+async function api(path,opt={}){
+  const r=await fetch(API+path,{method:opt.method||'GET',headers:Object.assign({'Content-Type':'application/json'},token?{Authorization:'Bearer '+token}:{}),body:opt.body?JSON.stringify(opt.body):undefined});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.error||'Erro inesperado');
+  return d;
+}
+function run(fn){return fn().catch(e=>{if(e.message==='Não autenticado')return logout();toast(e.message==='Failed to fetch'?'Sem conexão com o servidor':e.message)})}
+
+function stopGps(){if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}}
+function go(t){tab=t;clearInterval(timer);render()}
+function logout(){stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
+async function probe(){
+  try{await api('/driver/online',{method:'POST',body:{online:false}});approved=true}
+  catch(e){if(/aprovado/.test(e.message))approved=false;else throw e}
+}
+function render(){
+  $('nav').style.display=token&&approved?'flex':'none';
+  if(!token)return loginView(false);
+  if(approved===null)return run(async()=>{await probe();render()});
+  if(!approved)return pendView();
+  document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.t===tab));
+  tab==='home'?homeView():histView();
+}
+
+function loginView(reg){
+  $('#app').innerHTML=`<div class="card"><h2>${reg?'Cadastro de motorista':'Entrar'}</h2>
+  ${reg?'<input id="nm" placeholder="Nome"><input id="ph" type="tel" placeholder="Telefone"><select id="vt"><option value="moto">Moto</option><option value="carro">Carro</option><option value="van">Van</option><option value="caminhao">Caminhão</option></select><input id="pl" placeholder="Placa do veículo">':''}
+  <input id="em" type="email" placeholder="E-mail"><input id="pw" type="password" placeholder="Senha (mín. 6)">
+  <button onclick="auth(${reg})">${reg?'Cadastrar':'Entrar'}</button>
+  <button class="s" onclick="loginView(${!reg})">${reg?'Já tenho conta':'Quero ser motorista'}</button></div>`;
+}
+function auth(reg){run(async()=>{
+  const b={email:$('#em').value,password:$('#pw').value};let d;
+  if(reg){Object.assign(b,{name:$('#nm').value,phone:$('#ph').value,role:'driver',vehicle_type:$('#vt').value,plate:$('#pl').value});d=await api('/auth/register',{method:'POST',body:b})}
+  else d=await api('/auth/login',{method:'POST',body:b});
+  if(d.user.role!=='driver')throw new Error('Este app é para motoristas');
+  token=d.token;localStorage.setItem('t',token);approved=null;tab='home';render();
+})}
+function pendView(){
+  $('#app').innerHTML='<div class="card"><h2>Cadastro em análise</h2><p>Seu cadastro ainda não foi aprovado. Assim que a BRMove aprovar, você já pode receber corridas.</p><button onclick="approved=null;render()">Verificar novamente</button></div>';
+}
+
+const pos=()=>new Promise((ok,no)=>navigator.geolocation.getCurrentPosition(p=>ok({lat:p.coords.latitude,lng:p.coords.longitude}),()=>no(new Error('Ative a localização do celular e permita o acesso')),{enableHighAccuracy:true,timeout:15000}));
+function startGps(){
+  stopGps();
+  watchId=navigator.geolocation.watchPosition(p=>{
+    if(Date.now()-lastSend<10000)return;lastSend=Date.now();
+    api('/driver/location',{method:'POST',body:{lat:p.coords.latitude,lng:p.coords.longitude}}).catch(()=>{});
+  },()=>{},{enableHighAccuracy:true});
+}
+function toggle(){run(async()=>{
+  if(online){await api('/driver/online',{method:'POST',body:{online:false}});online=false;stopGps();return homeView()}
+  const p=await pos();
+  await api('/driver/online',{method:'POST',body:{online:true,lat:p.lat,lng:p.lng}});
+  online=true;startGps();homeView();
+})}
+
+const avail=o=>`<div class="card"><div class="st">${V[o.vehicle_type]} · ${Number(o.distance_km).toFixed(1)} km · ${money(o.price)}</div>
+  <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
+  <button onclick="accept(${o.id})">Aceitar corrida</button></div>`;
+const nav=(la,ln)=>`https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving`;
+function active(o){
+  const pk=o.status==='accepted';
+  return `<div class="card"><div class="st">Corrida #${o.id} · ${pk?'Vá até a coleta':'Leve até a entrega'}</div>
+  <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
+  <div><b>${money(o.price)}</b></div>
+  <a class="btn" target="_blank" href="${pk?nav(o.pickup_lat,o.pickup_lng):nav(o.dropoff_lat,o.dropoff_lng)}">Abrir navegação</a>
+  <button onclick="step(${o.id},'${pk?'picked_up':'delivered'}')">${pk?'Coletei o pedido':'Entreguei'}</button></div>`;
+}
+function homeView(){
+  clearInterval(timer);
+  $('#app').innerHTML=`<div class="card"><button class="${online?'':'g'}" onclick="toggle()">${online?'Ficar offline':'Ficar online'}</button></div><div id="ol"></div>`;
+  load();timer=setInterval(load,8000);
+}
+function load(){return run(async()=>{
+  const mine=await api('/orders/mine');
+  const act=mine.find(o=>['accepted','picked_up'].includes(o.status));
+  let h;
+  if(act)h=active(act);
+  else if(online){const av=await api('/orders/available');h=av.length?av.map(avail).join(''):'<div class="card">Nenhuma corrida no momento. Aguardando…</div>'}
+  else h='<div class="card">Fique online para receber corridas.</div>';
+  const el=$('#ol');if(el)el.innerHTML=h;
+})}
+function accept(id){run(async()=>{await api('/orders/'+id+'/accept',{method:'POST'});toast('Corrida aceita!');load()})}
+function step(id,s){run(async()=>{await api('/orders/'+id+'/status',{method:'POST',body:{status:s}});toast(s==='delivered'?'Entrega concluída!':'Pedido coletado');load()})}
+
+function histView(){
+  $('#app').innerHTML='<div id="hs"></div>';
+  run(async()=>{
+    const l=(await api('/orders/mine')).filter(o=>o.status==='delivered');
+    const tot=l.reduce((a,o)=>a+Number(o.price),0);
+    $('#hs').innerHTML=`<div class="card"><div class="st">Entregas concluídas</div><b>${l.length}</b> · total ${money(tot)} (valor bruto)</div>`+
+      l.map(o=>`<div class="card"><div class="st">#${o.id} · ${money(o.price)}${o.rating?' · '+'★'.repeat(o.rating):''}</div><div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div></div>`).join('');
+  });
+}
+render();
+</script>
+</body></html>
