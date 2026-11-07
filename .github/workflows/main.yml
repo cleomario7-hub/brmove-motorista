@@ -15,11 +15,22 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - run: npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
-      - run: npx cap init "BRMove Motorista" br.com.fretesbsb.motorista --web-dir www
+      - run: npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor-community/background-geolocation@1 @capacitor/local-notifications@6
+      - run: |
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "br.com.fretesbsb.motorista",
+            "appName": "BRMove Motorista",
+            "webDir": "www",
+            "android": { "useLegacyBridge": true },
+            "plugins": { "CapacitorHttp": { "enabled": true } }
+          }
+          EOF
       - run: npx cap add android
       - run: |
-          sed -i 's#<application#<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/><application#' android/app/src/main/AndroidManifest.xml
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/><uses-feature android:name="android.hardware.location.gps" android:required="false"/><application#' $M
+          sed -i 's#</application>#<service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="true" android:foregroundServiceType="location"/></application>#' $M
       - run: npx cap sync android
       - run: ./gradlew assembleDebug
         working-directory: android
