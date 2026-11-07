@@ -27,6 +27,7 @@ nav a.on{color:var(--r)}
 <nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="hist" onclick="go('hist')">Histórico</a><a onclick="logout()">Sair</a></nav>
 <div id="toast"></div>
 <script>
+window.addEventListener('error',e=>{const a=document.getElementById('app');if(a&&!a.innerHTML.trim())a.innerHTML='<div class="card"><h2>Erro no app</h2><p>'+String(e.message)+'</p></div>'});
 const API='https://api.fretesbsb.com.br';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -74,7 +75,7 @@ function render(){
   $('nav').style.display=token&&approved?'flex':'none';
   if(!token)return loginView(false);
   if(!pushStarted){pushStarted=true;initPush()}
-  if(approved===null)return run(async()=>{await probe();render()});
+  if(approved===null)return run(async()=>{try{await probe()}catch(e){if(e.message==='Não autenticado')throw e;return errView(e.message)}render()});
   if(!approved)return pendView();
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.t===tab));
   tab==='home'?homeView():histView();
@@ -94,6 +95,9 @@ function auth(reg){run(async()=>{
   if(d.user.role!=='driver')throw new Error('Este app é para motoristas');
   token=d.token;localStorage.setItem('t',token);approved=null;tab='home';render();
 })}
+function errView(m){
+  $('#app').innerHTML=`<div class="card"><h2>Sem conexão</h2><p>Não foi possível falar com o servidor. Confira a internet e tente de novo.</p><p style="font-size:13px;color:#6b6b6b">${esc(m)}</p><button onclick="approved=null;render()">Tentar de novo</button></div>`;
+}
 function pendView(){
   $('#app').innerHTML='<div class="card"><h2>Cadastro em análise</h2><p>Seu cadastro ainda não foi aprovado. Assim que a BRMove aprovar, você já pode receber corridas.</p><button onclick="approved=null;render()">Verificar novamente</button></div>';
 }
