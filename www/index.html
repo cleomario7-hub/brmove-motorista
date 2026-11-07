@@ -36,11 +36,16 @@ const money=n=>'R$ '+Number(n).toFixed(2).replace('.',',');
 let token=localStorage.getItem('t'),tab='home',online=false,approved=null,timer=null,watchId=null,lastSend=0;
 
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3500)}
+function plug(n){
+  const C=window.Capacitor;if(!C)return null;
+  if(typeof C.registerPlugin==='function')return C.registerPlugin(n);
+  return (C.Plugins&&C.Plugins[n])||null;
+}
 let pushStarted=false,pushOn=false,pushTok=null;
 async function initPush(){
   if(!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform()))return;
   try{
-    const P=Capacitor.registerPlugin('PushNotifications');
+    const P=plug('PushNotifications');if(!P)return;
     if(!pushOn){
       pushOn=true;
       await P.addListener('registration',t=>{pushTok=t.value;api('/devices',{method:'POST',body:{token:t.value}}).catch(()=>{})});
@@ -59,7 +64,7 @@ async function api(path,opt={}){
 function run(fn){return fn().catch(e=>{if(e.message==='Não autenticado')return logout();toast(e.message==='Failed to fetch'?'Sem conexão com o servidor':e.message)})}
 
 const NATIVE=!!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform());
-const BG=NATIVE?Capacitor.registerPlugin('BackgroundGeolocation'):null;
+const BG=NATIVE?plug('BackgroundGeolocation'):null;
 let watcher=null;
 async function stopGps(){
   if(watcher){try{await BG.removeWatcher({id:watcher})}catch(e){}watcher=null}
@@ -105,7 +110,7 @@ function pendView(){
 const pos=()=>new Promise((ok,no)=>navigator.geolocation.getCurrentPosition(p=>ok({lat:p.coords.latitude,lng:p.coords.longitude}),()=>no(new Error('Ative a localização do celular e permita o acesso')),{enableHighAccuracy:true,timeout:15000}));
 async function askNotif(){
   if(!NATIVE)return;
-  try{await Capacitor.registerPlugin('LocalNotifications').requestPermissions()}catch(e){}
+  try{const LN=plug('LocalNotifications');if(LN)await LN.requestPermissions()}catch(e){}
 }
 function send(la,ln){
   if(Date.now()-lastSend<10000)return;lastSend=Date.now();
@@ -113,7 +118,7 @@ function send(la,ln){
 }
 async function startGps(){
   await stopGps();
-  if(NATIVE){
+  if(NATIVE&&BG){
     try{
       watcher=await BG.addWatcher({
         backgroundTitle:'BRMove em serviço',
