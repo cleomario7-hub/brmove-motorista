@@ -19,14 +19,19 @@ nav{position:fixed;bottom:0;left:0;right:0;display:none;background:#fff;border-t
 nav a{flex:1;text-align:center;padding:14px 0;color:var(--mut);font-weight:600}
 nav a.on{color:var(--r)}
 .st{font-size:13px;font-weight:700;color:var(--r);margin-bottom:4px}
+.av{width:96px;height:96px;border-radius:50%;background:#eee center/cover;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:800;color:var(--r)}
+.bar{height:8px;background:#eee;border-radius:6px;overflow:hidden;margin:6px 0 10px}
+.bar i{display:block;height:100%;width:100%;background:var(--r);transition:width .2s linear}
+.lock{opacity:.6}
 #toast{position:fixed;left:16px;right:16px;bottom:84px;background:#222;color:#fff;padding:12px;border-radius:10px;display:none;text-align:center}
 </style></head>
 <body>
 <header>BRMove <small>Motorista</small></header>
 <main id="app"></main>
-<nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="hist" onclick="go('hist')">Histórico</a><a onclick="logout()">Sair</a></nav>
+<nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="wallet" onclick="go('wallet')">Carteira</a><a data-t="prof" onclick="go('prof')">Perfil</a><a onclick="logout()">Sair</a></nav>
 <div id="toast"></div>
 <script>
+window.addEventListener('error',e=>{const a=document.getElementById('app');if(a&&!a.innerHTML.trim())a.innerHTML='<div class="card"><h2>Erro no app</h2><p>'+String(e.message)+'</p></div>'});
 const API='https://api.fretesbsb.com.br';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -35,28 +40,58 @@ const money=n=>'R$ '+Number(n).toFixed(2).replace('.',',');
 let token=localStorage.getItem('t'),tab='home',online=false,approved=null,timer=null,watchId=null,lastSend=0;
 
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3500)}
+function plug(n){
+  const C=window.Capacitor;if(!C)return null;
+  if(typeof C.registerPlugin==='function')return C.registerPlugin(n);
+  return (C.Plugins&&C.Plugins[n])||null;
+}
+let pushStarted=false,pushOn=false,pushTok=null;
+async function initPush(){
+  if(!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform()))return;
+  try{
+    const P=plug('PushNotifications');
+    if(!P){toast('Notificações: plugin indisponível neste app');return}
+    if(!pushOn){
+      pushOn=true;
+      await P.addListener('registration',t=>{pushTok=t.value;api('/devices',{method:'POST',body:{token:t.value}}).then(()=>toast('Notificações ativas neste aparelho')).catch(e=>toast('Notificações: erro ao registrar ('+e.message+')'))});
+      await P.addListener('registrationError',e=>toast('Notificações: erro no registro ('+(e.error||'desconhecido')+')'));
+      await P.addListener('pushNotificationReceived',n=>{toast((n.title||'')+(n.body?' — '+n.body:''));if(tab==='home')load();if(tab==='wallet')walletView();});
+    }
+    const perm=await P.requestPermissions();
+    if(perm.receive==='granted')await P.register();
+    else toast('Notificações bloqueadas nas configurações do celular');
+  }catch(e){toast('Notificações: '+(e.message||'erro'))}
+}
 async function api(path,opt={}){
   const r=await fetch(API+path,{method:opt.method||'GET',headers:Object.assign({'Content-Type':'application/json'},token?{Authorization:'Bearer '+token}:{}),body:opt.body?JSON.stringify(opt.body):undefined});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.error||'Erro inesperado');
+  if(!r.ok){const er=new Error(d.error||'Erro inesperado');er.status=r.status;er.raw=!d.error;throw er}
   return d;
 }
 function run(fn){return fn().catch(e=>{if(e.message==='Não autenticado')return logout();toast(e.message==='Failed to fetch'?'Sem conexão com o servidor':e.message)})}
 
-function stopGps(){if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}}
-function go(t){tab=t;clearInterval(timer);render()}
-function logout(){stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
+const NATIVE=!!(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform());
+const BG=NATIVE?plug('BackgroundGeolocation'):null;
+let watcher=null;
+async function stopGps(){
+  if(watcher){try{await BG.removeWatcher({id:watcher})}catch(e){}watcher=null}
+  if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}
+}
+function go(t){dropRsv(true);tab=t;clearInterval(timer);render()}
+function logout(){dropRsv(true);if(pushTok&&token)api('/devices/remove',{method:'POST',body:{token:pushTok}}).catch(()=>{});pushStarted=false;stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
 async function probe(){
   try{await api('/driver/online',{method:'POST',body:{online:false}});approved=true}
   catch(e){if(/aprovado/.test(e.message))approved=false;else throw e}
 }
 function render(){
-  $('nav').style.display=token&&approved?'flex':'none';
+  $('nav').style.display=token&&approved!==null?'flex':'none';
   if(!token)return loginView(false);
-  if(approved===null)return run(async()=>{await probe();render()});
-  if(!approved)return pendView();
+  if(!pushStarted){pushStarted=true;initPush()}
+  if(approved===null)return run(async()=>{try{await probe()}catch(e){if(e.message==='Não autenticado')throw e;return errView(e.message)}render()});
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.t===tab));
-  tab==='home'?homeView():histView();
+  if(tab==='prof')return profView();
+  if(!approved)return pendView();
+  tab==='home'?homeView():walletView();
 }
 
 function loginView(reg){
@@ -73,61 +108,284 @@ function auth(reg){run(async()=>{
   if(d.user.role!=='driver')throw new Error('Este app é para motoristas');
   token=d.token;localStorage.setItem('t',token);approved=null;tab='home';render();
 })}
+function errView(m){
+  $('#app').innerHTML=`<div class="card"><h2>Sem conexão</h2><p>Não foi possível falar com o servidor. Confira a internet e tente de novo.</p><p style="font-size:13px;color:#6b6b6b">${esc(m)}</p><button onclick="approved=null;render()">Tentar de novo</button></div>`;
+}
 function pendView(){
-  $('#app').innerHTML='<div class="card"><h2>Cadastro em análise</h2><p>Seu cadastro ainda não foi aprovado. Assim que a BRMove aprovar, você já pode receber corridas.</p><button onclick="approved=null;render()">Verificar novamente</button></div>';
+  $('#app').innerHTML='<div class="card"><h2>Cadastro em análise</h2><p>Seu cadastro ainda não foi aprovado. Envie seus documentos na aba <b>Perfil</b> para agilizar a aprovação.</p><button onclick="go(\'prof\')">Enviar documentos</button><button class="s" onclick="approved=null;render()">Verificar novamente</button></div>';
 }
 
 const pos=()=>new Promise((ok,no)=>navigator.geolocation.getCurrentPosition(p=>ok({lat:p.coords.latitude,lng:p.coords.longitude}),()=>no(new Error('Ative a localização do celular e permita o acesso')),{enableHighAccuracy:true,timeout:15000}));
-function startGps(){
-  stopGps();
-  watchId=navigator.geolocation.watchPosition(p=>{
-    if(Date.now()-lastSend<10000)return;lastSend=Date.now();
-    api('/driver/location',{method:'POST',body:{lat:p.coords.latitude,lng:p.coords.longitude}}).catch(()=>{});
-  },()=>{},{enableHighAccuracy:true});
+async function askNotif(){
+  if(!NATIVE)return;
+  try{const LN=plug('LocalNotifications');if(LN)await LN.requestPermissions()}catch(e){}
+}
+function send(la,ln){
+  if(Date.now()-lastSend<10000)return;lastSend=Date.now();
+  api('/driver/location',{method:'POST',body:{lat:la,lng:ln}}).catch(()=>{});
+}
+async function startGps(){
+  await stopGps();
+  if(NATIVE&&BG){
+    try{
+      watcher=await BG.addWatcher({
+        backgroundTitle:'BRMove em serviço',
+        backgroundMessage:'Compartilhando sua localização com o cliente.',
+        requestPermissions:true,stale:false,distanceFilter:15
+      },(l,err)=>{
+        if(err){if(err.code==='NOT_AUTHORIZED')toast('Permita o acesso à localização nas configurações do celular');return}
+        send(l.latitude,l.longitude);
+      });
+      return;
+    }catch(e){}
+  }
+  watchId=navigator.geolocation.watchPosition(p=>send(p.coords.latitude,p.coords.longitude),()=>{},{enableHighAccuracy:true});
 }
 function toggle(){run(async()=>{
-  if(online){await api('/driver/online',{method:'POST',body:{online:false}});online=false;stopGps();return homeView()}
+  if(online){dropRsv(true);await api('/driver/online',{method:'POST',body:{online:false}});online=false;stopGps();return homeView()}
   const p=await pos();
   await api('/driver/online',{method:'POST',body:{online:true,lat:p.lat,lng:p.lng}});
-  online=true;startGps();homeView();
+  online=true;await askNotif();await startGps();homeView();
 })}
 
-const avail=o=>`<div class="card"><div class="st">${V[o.vehicle_type]} · ${Number(o.distance_km).toFixed(1)} km · ${money(o.price)}</div>
-  <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
-  <button onclick="accept(${o.id})">Aceitar corrida</button></div>`;
+// quanto o motorista recebe (a porcentagem dele sobre o valor da corrida)
+const earn=o=>o.driver_earning!=null
+  ?`<div style="font-size:24px;font-weight:800;margin:4px 0">${money(o.driver_earning)}</div><div style="font-size:12px;color:#6b6b6b;margin-bottom:6px">você recebe ${Number(o.driver_percent)}% do valor da corrida (${money(o.price)})</div>`
+  :`<div><b>${money(o.price)}</b></div>`;
+const det=o=>`<div class="st">${V[o.vehicle_type]} · ${Number(o.distance_km).toFixed(1)} km</div>${earn(o)}
+  <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}`;
+const avail=o=>`<div class="card">${det(o)}<button onclick="reserve(${o.id})">Escolher esta corrida</button></div>`;
+const lockedCard=o=>`<div class="card lock">${det(o)}<div style="margin-top:8px;font-weight:700">🔒 Outro motorista está vendo esta corrida</div><div style="font-size:13px;color:var(--mut)">Ela pode voltar a ficar disponível em instantes.</div></div>`;
+
+// ---------- reserva de 10 segundos: o servidor trava a corrida para quem a escolheu ----------
+let rsv=null,rtick=null,busy=false,avList=[];
+function dropRsv(rel){
+  clearInterval(rtick);rtick=null;
+  const r=rsv;rsv=null;
+  if(r&&rel)api('/orders/'+r.id+'/release',{method:'POST'}).catch(()=>{});
+}
+function showRsv(){
+  const el=$('#ol');if(!el||!rsv)return;
+  el.innerHTML=`<div class="card" style="border:2px solid var(--r)">
+    <div class="st">Decida em <span id="cd">${Math.ceil(rsv.total/1000)}</span> s · a corrida está reservada para você</div>
+    <div class="bar"><i id="bi"></i></div>${det(rsv.o)}
+    <button class="g" onclick="acceptRsv()">Aceitar corrida</button>
+    <button class="s" onclick="declineRsv()">Recusar</button></div>`;
+}
+function tick(){
+  if(!rsv)return;
+  const ms=rsv.until-Date.now();
+  if(ms<=0){dropRsv(false);toast('Tempo esgotado. A corrida voltou para a lista.');if(tab==='home')load();return}
+  const cd=$('#cd');if(cd)cd.textContent=Math.ceil(ms/1000);
+  const bi=$('#bi');if(bi)bi.style.width=Math.max(0,ms/rsv.total*100)+'%';
+}
+function reserve(id){
+  if(busy||rsv)return;busy=true;
+  run(async()=>{
+    try{
+      const r=await api('/orders/'+id+'/reserve',{method:'POST'});
+      const o=avList.find(x=>x.id===id);
+      if(!o){load();return}
+      const total=Number(r.expires_in_ms)||10000;
+      rsv={id,o,total,until:Date.now()+total};
+      showRsv();
+      clearInterval(rtick);rtick=setInterval(tick,200);
+    }catch(e){
+      // servidor ainda sem a reserva: mantém o jeito antigo (aceita direto)
+      if(e.status===404&&e.raw){await api('/orders/'+id+'/accept',{method:'POST'});toast('Corrida aceita!');load();return}
+      load();throw e;
+    }
+  }).finally(()=>{busy=false});
+}
+function acceptRsv(){
+  if(busy||!rsv)return;busy=true;const id=rsv.id;
+  run(async()=>{
+    try{await api('/orders/'+id+'/accept',{method:'POST'})}
+    catch(e){dropRsv(false);load();throw e}
+    dropRsv(false);toast('Corrida aceita!');load();
+  }).finally(()=>{busy=false});
+}
+function declineRsv(){
+  if(!rsv)return;
+  dropRsv(true);toast('Corrida liberada para os outros motoristas.');load();
+}
 const nav=(la,ln)=>`https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving`;
 function active(o){
   const pk=o.status==='accepted';
   return `<div class="card"><div class="st">Corrida #${o.id} · ${pk?'Vá até a coleta':'Leve até a entrega'}</div>
   <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
-  <div><b>${money(o.price)}</b></div>
+  ${earn(o)}
   <a class="btn" target="_blank" href="${pk?nav(o.pickup_lat,o.pickup_lng):nav(o.dropoff_lat,o.dropoff_lng)}">Abrir navegação</a>
   <button onclick="step(${o.id},'${pk?'picked_up':'delivered'}')">${pk?'Coletei o pedido':'Entreguei'}</button></div>`;
 }
+let pixKey;
 function homeView(){
   clearInterval(timer);
-  $('#app').innerHTML=`<div class="card"><button class="${online?'':'g'}" onclick="toggle()">${online?'Ficar offline':'Ficar online'}</button></div><div id="ol"></div>`;
-  load();timer=setInterval(load,8000);
+  $('#app').innerHTML=`<div id="pb"></div><div class="card"><button class="${online?'':'g'}" onclick="toggle()">${online?'Ficar offline':'Ficar online'}</button></div><div id="ol"></div>`;
+  const banner=()=>{const b=$('#pb');if(b&&!pixKey)b.innerHTML='<div class="card" style="border:1px solid var(--r)">Cadastre sua <b>chave Pix</b> na aba <b>Carteira</b> para receber os repasses das corridas.</div>'};
+  if(pixKey===undefined)run(async()=>{const m=await api('/driver/me');pixKey=m.pix_key||'';banner()});else banner();
+  load();timer=setInterval(load,5000);
 }
-function load(){return run(async()=>{
+function load(){if(rsv)return;return run(async()=>{
   const mine=await api('/orders/mine');
   const act=mine.find(o=>['accepted','picked_up'].includes(o.status));
   let h;
   if(act)h=active(act);
-  else if(online){const av=await api('/orders/available');h=av.length?av.map(avail).join(''):'<div class="card">Nenhuma corrida no momento. Aguardando…</div>'}
+  else if(online){const av=await api('/orders/available');avList=av;
+    const hint=av.some(o=>!o.locked)?'<div style="font-size:13px;color:var(--mut);margin:0 2px 8px">Ao tocar em <b>Escolher esta corrida</b>, ela fica reservada para você por 10 segundos.</div>':'';
+    h=av.length?hint+av.map(o=>o.locked?lockedCard(o):avail(o)).join(''):'<div class="card">Nenhuma corrida no momento. Aguardando…</div>'}
   else h='<div class="card">Fique online para receber corridas.</div>';
+  if(rsv)return;
   const el=$('#ol');if(el)el.innerHTML=h;
 })}
 function accept(id){run(async()=>{await api('/orders/'+id+'/accept',{method:'POST'});toast('Corrida aceita!');load()})}
 function step(id,s){run(async()=>{await api('/orders/'+id+'/status',{method:'POST',body:{status:s}});toast(s==='delivered'?'Entrega concluída!':'Pedido coletado');load()})}
 
-function histView(){
-  $('#app').innerHTML='<div id="hs"></div>';
+function savePix(){run(async()=>{
+  const v=$('#pk').value.trim();
+  if(v.length<5)throw new Error('Informe uma chave Pix válida');
+  const r=await api('/driver/pix-key',{method:'PUT',body:{pix_key:v}});
+  pixKey=r.pix_key;toast('Chave Pix salva!');walletView();
+})}
+// ---------- carteira: saldo, repasse, chave Pix e extrato ----------
+const fmtD=d=>new Date(d).toLocaleDateString('pt-BR');
+function reqBtn(p){
+  const ok=p.available>0&&p.available>=p.minimum&&!!p.pix_key;
+  return `${p.minimum>0?`<div style="font-size:13px;color:#6b6b6b;margin-top:4px">Valor mínimo para solicitar: ${money(p.minimum)}</div>`:''}
+  ${p.pix_key?'':'<div style="font-size:13px;color:#D62828;margin-top:4px">Cadastre sua chave Pix abaixo para poder solicitar.</div>'}
+  <button ${ok?'':'disabled style="opacity:.5"'} onclick="reqPay()">Solicitar repasse</button>
+  ${ok?'':'<div style="font-size:12px;color:#6b6b6b;margin-top:4px">O botão fica ativo quando houver saldo disponível e a chave Pix estiver cadastrada.</div>'}`;
+}
+function reqPay(){run(async()=>{
+  if(!confirm('Solicitar o repasse de todo o saldo disponível para a sua chave Pix?'))return;
+  await api('/driver/payouts/request',{method:'POST'});
+  toast('Repasse solicitado! A BRMove vai fazer o Pix.');
+  walletView();
+})}
+function cancelPay(id){run(async()=>{
+  if(!confirm('Cancelar a solicitação de repasse?'))return;
+  await api('/driver/payouts/'+id+'/cancel',{method:'POST'});
+  toast('Solicitação cancelada');
+  walletView();
+})}
+function walletView(){
+  $('#app').innerHTML='<div id="wl"><div class="card">Carregando carteira…</div></div>';
   run(async()=>{
-    const l=(await api('/orders/mine')).filter(o=>o.status==='delivered');
-    const tot=l.reduce((a,o)=>a+Number(o.price),0);
-    $('#hs').innerHTML=`<div class="card"><div class="st">Entregas concluídas</div><b>${l.length}</b> · total ${money(tot)} (valor bruto)</div>`+
-      l.map(o=>`<div class="card"><div class="st">#${o.id} · ${money(o.price)}${o.rating?' · '+'★'.repeat(o.rating):''}</div><div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div></div>`).join('');
+    const [e,m,all]=await Promise.all([api('/driver/earnings'),api('/driver/me'),api('/orders/mine')]);
+    let pr=null,perr='';
+    try{pr=await api('/driver/payouts')}catch(x){if(x.message==='Não autenticado')throw x;perr=x.message}
+    pixKey=m.pix_key||'';
+    if(!$('#wl'))return;
+    const dl=all.filter(o=>o.status==='delivered');
+    const plural=(n,a,b)=>n+' '+(n===1?a:b);
+    const bal=pr
+      ?`<div class="st">Saldo disponível para repasse</div>
+        <div style="font-size:32px;font-weight:800">${money(pr.available)}</div>
+        <div style="font-size:13px;color:#6b6b6b">${pr.available_count?plural(pr.available_count,'corrida entregue e paga','corridas entregues e pagas'):'Nenhuma corrida disponível ainda'}</div>
+        ${pr.open
+          ?`<div style="margin-top:10px">⏳ <b>${money(pr.open.amount)}</b> solicitado em ${fmtD(pr.open.requested_at)}. Aguardando o pagamento da BRMove.</div><button class="s" onclick="cancelPay(${pr.open.id})">Cancelar solicitação</button>`
+          :reqBtn(pr)}`
+      :`<div class="st">Saldo</div><div style="color:#D62828">Não foi possível carregar o repasse (${esc(perr||'sem resposta')}). O servidor pode estar desatualizado.</div><button class="s" onclick="walletView()">Tentar de novo</button>`;
+    const mov=[];
+    dl.forEach(o=>mov.push({d:o.updated_at||o.paid_at||o.created_at,title:'Corrida #'+o.id,sub:esc(String(o.pickup_address||'').slice(0,26))+' → '+esc(String(o.dropoff_address||'').slice(0,26)),val:'+ '+money(o.driver_earning!=null?o.driver_earning:o.price),color:'#1e8e3e'}));
+    if(pr){
+      if(pr.open)mov.push({d:pr.open.requested_at,title:'⏳ Repasse solicitado',sub:'aguardando pagamento',val:money(pr.open.amount),color:'#6b6b6b'});
+      (pr.history||[]).forEach(x=>mov.push({d:x.decided_at||x.requested_at,
+        title:x.status==='paid'?'✅ Repasse pago':x.status==='rejected'?'❌ Repasse recusado':'Repasse cancelado',
+        sub:x.reason?'Motivo: '+esc(x.reason):'',
+        val:(x.status==='paid'?'− ':'')+money(x.amount),color:x.status==='paid'?'#D62828':'#6b6b6b'}));
+    }
+    mov.sort((a,b)=>new Date(b.d)-new Date(a.d));
+    const row=x=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--ln)"><div><div style="font-weight:600">${x.title}</div><div style="font-size:12px;color:#6b6b6b">${fmtD(x.d)}${x.sub?' · '+x.sub:''}</div></div><div style="font-weight:800;white-space:nowrap;color:${x.color}">${x.val}</div></div>`;
+    $('#wl').innerHTML=`<div class="card">${bal}</div>
+      <div class="card"><div class="st">Resumo (você recebe ${Number(e.percent)}% de cada corrida)</div>
+        <div>Entregas concluídas: <b>${e.deliveries}</b></div>
+        <div>A receber (total): <b>${money(e.pending)}</b></div>
+        <div>Já recebido: <b>${money(e.paid)}</b></div></div>
+      <div class="card"><div class="st">Sua chave Pix (recebe os repasses)</div>
+        ${pixKey?'':'<div style="color:#D62828;font-size:14px;margin-bottom:4px">Cadastre sua chave Pix para receber.</div>'}
+        <input id="pk" placeholder="CPF, e-mail, telefone ou chave aleatória" value="${esc(pixKey)}"><button onclick="savePix()">Salvar chave Pix</button></div>
+      <div class="card"><div class="st">Extrato</div>${mov.length?mov.slice(0,40).map(row).join(''):'<div style="color:#6b6b6b">Nada por aqui ainda. Suas corridas e repasses vão aparecer nesta lista.</div>'}</div>`;
+  });
+}
+// ---------- perfil: dados, foto e documentos ----------
+const VL={moto:'da moto',carro:'do carro',van:'da van',caminhao:'do caminhão'};
+const DOCS=[['documento','Documento pessoal (RG ou CPF)'],['cnh','CNH (carteira de habilitação)'],['doc_veiculo','']];
+const plateN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+let curProf=null;
+function shrink(file){
+  return new Promise((ok,no)=>{
+    const r=new FileReader();
+    r.onerror=()=>no(new Error('Não foi possível ler a imagem'));
+    r.onload=()=>{
+      const im=new Image();
+      im.onerror=()=>no(new Error('Imagem inválida'));
+      im.onload=()=>{
+        const k=Math.min(1,1600/Math.max(im.width,im.height));
+        const c=document.createElement('canvas');
+        c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);
+        c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+        ok(c.toDataURL('image/jpeg',0.78).split(',')[1]);
+      };
+      im.src=r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+function pickImg(kind,cam){
+  const i=document.createElement('input');
+  i.type='file';i.accept='image/*';
+  if(cam)i.setAttribute('capture',kind==='foto'?'user':'environment');
+  i.onchange=()=>{const f=i.files&&i.files[0];if(f)sendDoc(kind,f)};
+  i.click();
+}
+function sendDoc(kind,file){run(async()=>{
+  toast('Enviando imagem…');
+  const data=await shrink(file);
+  await api('/driver/docs/'+kind,{method:'POST',body:{data}});
+  toast('Enviado com sucesso!');
+  profView();
+})}
+function saveProf(){run(async()=>{
+  const b={name:$('#pn').value,phone:$('#pp').value,vehicle_type:$('#pv').value,plate:$('#pl').value};
+  if((b.vehicle_type!==curProf.vehicle_type||plateN(b.plate)!==plateN(curProf.plate))&&!confirm('Mudar o veículo ou a placa exige nova aprovação, e você ficará offline até ser aprovado. Continuar?'))return;
+  const r=await api('/driver/profile',{method:'PUT',body:b});
+  if(r.reapproval){approved=false;online=false;stopGps()}
+  toast(r.reapproval?'Dados salvos. Aguarde a nova aprovação.':'Dados salvos!');
+  profView();
+})}
+function profView(){
+  $('#app').innerHTML='<div id="pf"><div class="card">Carregando…</div></div>';
+  run(async()=>{
+    const p=await api('/driver/profile');
+    curProf=p;pixKey=p.pix_key||'';
+    const have=p.docs||{};
+    const st=k=>have[k]?`<span style="color:#1e8e3e">✅ Enviado em ${new Date(have[k]).toLocaleDateString('pt-BR')}</span>`:'<span style="color:#D62828">Pendente</span>';
+    const btns=k=>`<div style="display:flex;gap:8px"><button class="s" onclick="pickImg('${k}',true)">📷 Tirar foto</button><button class="s" onclick="pickImg('${k}',false)">🖼️ Galeria</button></div>`;
+    if(!$('#pf'))return;
+    $('#pf').innerHTML=`
+    ${p.approved?'':'<div class="card" style="border:1px solid var(--r)"><b>Cadastro em análise.</b> Envie seus documentos abaixo para agilizar a aprovação.</div>'}
+    <div class="card" style="text-align:center"><div id="av" class="av">${esc((p.name||'?').trim().charAt(0).toUpperCase())}</div>
+      <div class="st">Foto de perfil</div><div>${st('foto')}</div>${btns('foto')}</div>
+    <div class="card"><div class="st">Meus dados</div>
+      <input id="pn" placeholder="Nome completo" value="${esc(p.name)}">
+      <input id="pp" type="tel" placeholder="Telefone" value="${esc(p.phone)}">
+      <select id="pv">${Object.keys(V).map(k=>`<option value="${k}" ${k===p.vehicle_type?'selected':''}>${V[k]}</option>`).join('')}</select>
+      <input id="pl" placeholder="Placa do veículo" value="${esc(p.plate)}">
+      <div style="font-size:13px;color:#6b6b6b;margin:4px 0">E-mail da conta: ${esc(p.email)}. Mudar o veículo ou a placa exige nova aprovação.</div>
+      <button onclick="saveProf()">Salvar dados</button></div>
+    <div class="card"><div class="st">Documentos</div>
+      ${DOCS.map(([k,l])=>`<div style="margin:14px 0"><b>${k==='doc_veiculo'?'Documento '+VL[p.vehicle_type]+' (CRLV)':l}</b><div>${st(k)}</div><div id="th_${k}"></div>${btns(k)}</div>`).join('')}
+      <div style="font-size:13px;color:#6b6b6b">Tire as fotos com boa luz, sem cortes, com todos os dados legíveis.</div></div>`;
+    for(const k of ['foto','documento','cnh','doc_veiculo']){
+      if(!have[k])continue;
+      try{
+        const r=await api('/driver/docs/'+k);
+        const src='data:'+r.mime+';base64,'+r.data;
+        if(k==='foto'){const a=$('#av');if(a){a.style.backgroundImage='url('+src+')';a.textContent=''}}
+        else{const t=$('#th_'+k);if(t)t.innerHTML='<img src="'+src+'" style="max-width:100%;max-height:160px;border-radius:8px;margin:6px 0">'}
+      }catch(e){}
+    }
   });
 }
 render();
