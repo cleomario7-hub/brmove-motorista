@@ -24,7 +24,7 @@ nav a.on{color:var(--r)}
 <body>
 <header>BRMove <small>Motorista</small></header>
 <main id="app"></main>
-<nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="hist" onclick="go('hist')">Histórico</a><a onclick="logout()">Sair</a></nav>
+<nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="hist" onclick="go('hist')">Ganhos</a><a onclick="logout()">Sair</a></nav>
 <div id="toast"></div>
 <script>
 window.addEventListener('error',e=>{const a=document.getElementById('app');if(a&&!a.innerHTML.trim())a.innerHTML='<div class="card"><h2>Erro no app</h2><p>'+String(e.message)+'</p></div>'});
@@ -143,7 +143,11 @@ function toggle(){run(async()=>{
   online=true;await askNotif();await startGps();homeView();
 })}
 
-const avail=o=>`<div class="card"><div class="st">${V[o.vehicle_type]} · ${Number(o.distance_km).toFixed(1)} km · ${money(o.price)}</div>
+// quanto o motorista recebe (a porcentagem dele sobre o valor da corrida)
+const earn=o=>o.driver_earning!=null
+  ?`<div style="font-size:24px;font-weight:800;margin:4px 0">${money(o.driver_earning)}</div><div style="font-size:12px;color:#6b6b6b;margin-bottom:6px">você recebe ${Number(o.driver_percent)}% do valor da corrida (${money(o.price)})</div>`
+  :`<div><b>${money(o.price)}</b></div>`;
+const avail=o=>`<div class="card"><div class="st">${V[o.vehicle_type]} · ${Number(o.distance_km).toFixed(1)} km</div>${earn(o)}
   <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
   <button onclick="accept(${o.id})">Aceitar corrida</button></div>`;
 const nav=(la,ln)=>`https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving`;
@@ -151,13 +155,16 @@ function active(o){
   const pk=o.status==='accepted';
   return `<div class="card"><div class="st">Corrida #${o.id} · ${pk?'Vá até a coleta':'Leve até a entrega'}</div>
   <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
-  <div><b>${money(o.price)}</b></div>
+  ${earn(o)}
   <a class="btn" target="_blank" href="${pk?nav(o.pickup_lat,o.pickup_lng):nav(o.dropoff_lat,o.dropoff_lng)}">Abrir navegação</a>
   <button onclick="step(${o.id},'${pk?'picked_up':'delivered'}')">${pk?'Coletei o pedido':'Entreguei'}</button></div>`;
 }
+let pixKey;
 function homeView(){
   clearInterval(timer);
-  $('#app').innerHTML=`<div class="card"><button class="${online?'':'g'}" onclick="toggle()">${online?'Ficar offline':'Ficar online'}</button></div><div id="ol"></div>`;
+  $('#app').innerHTML=`<div id="pb"></div><div class="card"><button class="${online?'':'g'}" onclick="toggle()">${online?'Ficar offline':'Ficar online'}</button></div><div id="ol"></div>`;
+  const banner=()=>{const b=$('#pb');if(b&&!pixKey)b.innerHTML='<div class="card" style="border:1px solid var(--r)">Cadastre sua <b>chave Pix</b> na aba <b>Ganhos</b> para receber os repasses das corridas.</div>'};
+  if(pixKey===undefined)run(async()=>{const m=await api('/driver/me');pixKey=m.pix_key||'';banner()});else banner();
   load();timer=setInterval(load,8000);
 }
 function load(){return run(async()=>{
@@ -172,13 +179,28 @@ function load(){return run(async()=>{
 function accept(id){run(async()=>{await api('/orders/'+id+'/accept',{method:'POST'});toast('Corrida aceita!');load()})}
 function step(id,s){run(async()=>{await api('/orders/'+id+'/status',{method:'POST',body:{status:s}});toast(s==='delivered'?'Entrega concluída!':'Pedido coletado');load()})}
 
+function savePix(){run(async()=>{
+  const v=$('#pk').value.trim();
+  if(v.length<5)throw new Error('Informe uma chave Pix válida');
+  const r=await api('/driver/pix-key',{method:'PUT',body:{pix_key:v}});
+  pixKey=r.pix_key;toast('Chave Pix salva!');histView();
+})}
 function histView(){
   $('#app').innerHTML='<div id="hs"></div>';
   run(async()=>{
-    const l=(await api('/orders/mine')).filter(o=>o.status==='delivered');
-    const tot=l.reduce((a,o)=>a+Number(o.price),0);
-    $('#hs').innerHTML=`<div class="card"><div class="st">Entregas concluídas</div><b>${l.length}</b> · total ${money(tot)} (valor bruto)</div>`+
-      l.map(o=>`<div class="card"><div class="st">#${o.id} · ${money(o.price)}${o.rating?' · '+'★'.repeat(o.rating):''}</div><div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div></div>`).join('');
+    const [e,m,all]=await Promise.all([api('/driver/earnings'),api('/driver/me'),api('/orders/mine')]);
+    pixKey=m.pix_key||'';
+    const l=all.filter(o=>o.status==='delivered');
+    const po=o=>o.payout_status==='paid'?'✅ repasse pago':o.payout_status==='pending'?'⏳ repasse pendente':'';
+    if(!$('#hs'))return;
+    $('#hs').innerHTML=`<div class="card"><div class="st">Sua chave Pix (recebe os repasses)</div>
+      ${pixKey?'':'<div style="color:#D62828;font-size:14px;margin-bottom:4px">Cadastre sua chave Pix para receber.</div>'}
+      <input id="pk" placeholder="CPF, e-mail, telefone ou chave aleatória" value="${esc(pixKey)}"><button onclick="savePix()">Salvar chave Pix</button></div>
+      <div class="card"><div class="st">Seus ganhos (${Number(e.percent)}% de cada corrida)</div>
+      <div>Entregas concluídas: <b>${e.deliveries}</b></div>
+      <div>A receber: <b>${money(e.pending)}</b></div>
+      <div>Já recebido: <b>${money(e.paid)}</b></div></div>`+
+      l.map(o=>`<div class="card"><div class="st">#${o.id} · ${money(o.driver_earning!=null?o.driver_earning:o.price)}${o.rating?' · '+'★'.repeat(o.rating):''}</div><div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div><div style="font-size:13px;color:#6b6b6b">${po(o)}</div></div>`).join('');
   });
 }
 render();
