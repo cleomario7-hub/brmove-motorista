@@ -19,12 +19,13 @@ nav{position:fixed;bottom:0;left:0;right:0;display:none;background:#fff;border-t
 nav a{flex:1;text-align:center;padding:14px 0;color:var(--mut);font-weight:600}
 nav a.on{color:var(--r)}
 .st{font-size:13px;font-weight:700;color:var(--r);margin-bottom:4px}
+.av{width:96px;height:96px;border-radius:50%;background:#eee center/cover;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:800;color:var(--r)}
 #toast{position:fixed;left:16px;right:16px;bottom:84px;background:#222;color:#fff;padding:12px;border-radius:10px;display:none;text-align:center}
 </style></head>
 <body>
 <header>BRMove <small>Motorista</small></header>
 <main id="app"></main>
-<nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="hist" onclick="go('hist')">Ganhos</a><a onclick="logout()">Sair</a></nav>
+<nav><a data-t="home" onclick="go('home')">Corridas</a><a data-t="hist" onclick="go('hist')">Ganhos</a><a data-t="prof" onclick="go('prof')">Perfil</a><a onclick="logout()">Sair</a></nav>
 <div id="toast"></div>
 <script>
 window.addEventListener('error',e=>{const a=document.getElementById('app');if(a&&!a.innerHTML.trim())a.innerHTML='<div class="card"><h2>Erro no app</h2><p>'+String(e.message)+'</p></div>'});
@@ -80,12 +81,13 @@ async function probe(){
   catch(e){if(/aprovado/.test(e.message))approved=false;else throw e}
 }
 function render(){
-  $('nav').style.display=token&&approved?'flex':'none';
+  $('nav').style.display=token&&approved!==null?'flex':'none';
   if(!token)return loginView(false);
   if(!pushStarted){pushStarted=true;initPush()}
   if(approved===null)return run(async()=>{try{await probe()}catch(e){if(e.message==='Não autenticado')throw e;return errView(e.message)}render()});
-  if(!approved)return pendView();
   document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.t===tab));
+  if(tab==='prof')return profView();
+  if(!approved)return pendView();
   tab==='home'?homeView():histView();
 }
 
@@ -107,7 +109,7 @@ function errView(m){
   $('#app').innerHTML=`<div class="card"><h2>Sem conexão</h2><p>Não foi possível falar com o servidor. Confira a internet e tente de novo.</p><p style="font-size:13px;color:#6b6b6b">${esc(m)}</p><button onclick="approved=null;render()">Tentar de novo</button></div>`;
 }
 function pendView(){
-  $('#app').innerHTML='<div class="card"><h2>Cadastro em análise</h2><p>Seu cadastro ainda não foi aprovado. Assim que a BRMove aprovar, você já pode receber corridas.</p><button onclick="approved=null;render()">Verificar novamente</button></div>';
+  $('#app').innerHTML='<div class="card"><h2>Cadastro em análise</h2><p>Seu cadastro ainda não foi aprovado. Envie seus documentos na aba <b>Perfil</b> para agilizar a aprovação.</p><button onclick="go(\'prof\')">Enviar documentos</button><button class="s" onclick="approved=null;render()">Verificar novamente</button></div>';
 }
 
 const pos=()=>new Promise((ok,no)=>navigator.geolocation.getCurrentPosition(p=>ok({lat:p.coords.latitude,lng:p.coords.longitude}),()=>no(new Error('Ative a localização do celular e permita o acesso')),{enableHighAccuracy:true,timeout:15000}));
@@ -201,6 +203,86 @@ function histView(){
       <div>A receber: <b>${money(e.pending)}</b></div>
       <div>Já recebido: <b>${money(e.paid)}</b></div></div>`+
       l.map(o=>`<div class="card"><div class="st">#${o.id} · ${money(o.driver_earning!=null?o.driver_earning:o.price)}${o.rating?' · '+'★'.repeat(o.rating):''}</div><div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div><div style="font-size:13px;color:#6b6b6b">${po(o)}</div></div>`).join('');
+  });
+}
+// ---------- perfil: dados, foto e documentos ----------
+const VL={moto:'da moto',carro:'do carro',van:'da van',caminhao:'do caminhão'};
+const DOCS=[['documento','Documento pessoal (RG ou CPF)'],['cnh','CNH (carteira de habilitação)'],['doc_veiculo','']];
+const plateN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+let curProf=null;
+function shrink(file){
+  return new Promise((ok,no)=>{
+    const r=new FileReader();
+    r.onerror=()=>no(new Error('Não foi possível ler a imagem'));
+    r.onload=()=>{
+      const im=new Image();
+      im.onerror=()=>no(new Error('Imagem inválida'));
+      im.onload=()=>{
+        const k=Math.min(1,1600/Math.max(im.width,im.height));
+        const c=document.createElement('canvas');
+        c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);
+        c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+        ok(c.toDataURL('image/jpeg',0.78).split(',')[1]);
+      };
+      im.src=r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+function pickImg(kind,cam){
+  const i=document.createElement('input');
+  i.type='file';i.accept='image/*';
+  if(cam)i.setAttribute('capture',kind==='foto'?'user':'environment');
+  i.onchange=()=>{const f=i.files&&i.files[0];if(f)sendDoc(kind,f)};
+  i.click();
+}
+function sendDoc(kind,file){run(async()=>{
+  toast('Enviando imagem…');
+  const data=await shrink(file);
+  await api('/driver/docs/'+kind,{method:'POST',body:{data}});
+  toast('Enviado com sucesso!');
+  profView();
+})}
+function saveProf(){run(async()=>{
+  const b={name:$('#pn').value,phone:$('#pp').value,vehicle_type:$('#pv').value,plate:$('#pl').value};
+  if((b.vehicle_type!==curProf.vehicle_type||plateN(b.plate)!==plateN(curProf.plate))&&!confirm('Mudar o veículo ou a placa exige nova aprovação, e você ficará offline até ser aprovado. Continuar?'))return;
+  const r=await api('/driver/profile',{method:'PUT',body:b});
+  if(r.reapproval){approved=false;online=false;stopGps()}
+  toast(r.reapproval?'Dados salvos. Aguarde a nova aprovação.':'Dados salvos!');
+  profView();
+})}
+function profView(){
+  $('#app').innerHTML='<div id="pf"><div class="card">Carregando…</div></div>';
+  run(async()=>{
+    const p=await api('/driver/profile');
+    curProf=p;pixKey=p.pix_key||'';
+    const have=p.docs||{};
+    const st=k=>have[k]?`<span style="color:#1e8e3e">✅ Enviado em ${new Date(have[k]).toLocaleDateString('pt-BR')}</span>`:'<span style="color:#D62828">Pendente</span>';
+    const btns=k=>`<div style="display:flex;gap:8px"><button class="s" onclick="pickImg('${k}',true)">📷 Tirar foto</button><button class="s" onclick="pickImg('${k}',false)">🖼️ Galeria</button></div>`;
+    if(!$('#pf'))return;
+    $('#pf').innerHTML=`
+    ${p.approved?'':'<div class="card" style="border:1px solid var(--r)"><b>Cadastro em análise.</b> Envie seus documentos abaixo para agilizar a aprovação.</div>'}
+    <div class="card" style="text-align:center"><div id="av" class="av">${esc((p.name||'?').trim().charAt(0).toUpperCase())}</div>
+      <div class="st">Foto de perfil</div><div>${st('foto')}</div>${btns('foto')}</div>
+    <div class="card"><div class="st">Meus dados</div>
+      <input id="pn" placeholder="Nome completo" value="${esc(p.name)}">
+      <input id="pp" type="tel" placeholder="Telefone" value="${esc(p.phone)}">
+      <select id="pv">${Object.keys(V).map(k=>`<option value="${k}" ${k===p.vehicle_type?'selected':''}>${V[k]}</option>`).join('')}</select>
+      <input id="pl" placeholder="Placa do veículo" value="${esc(p.plate)}">
+      <div style="font-size:13px;color:#6b6b6b;margin:4px 0">E-mail da conta: ${esc(p.email)}. Mudar o veículo ou a placa exige nova aprovação.</div>
+      <button onclick="saveProf()">Salvar dados</button></div>
+    <div class="card"><div class="st">Documentos</div>
+      ${DOCS.map(([k,l])=>`<div style="margin:14px 0"><b>${k==='doc_veiculo'?'Documento '+VL[p.vehicle_type]+' (CRLV)':l}</b><div>${st(k)}</div><div id="th_${k}"></div>${btns(k)}</div>`).join('')}
+      <div style="font-size:13px;color:#6b6b6b">Tire as fotos com boa luz, sem cortes, com todos os dados legíveis.</div></div>`;
+    for(const k of ['foto','documento','cnh','doc_veiculo']){
+      if(!have[k])continue;
+      try{
+        const r=await api('/driver/docs/'+k);
+        const src='data:'+r.mime+';base64,'+r.data;
+        if(k==='foto'){const a=$('#av');if(a){a.style.backgroundImage='url('+src+')';a.textContent=''}}
+        else{const t=$('#th_'+k);if(t)t.innerHTML='<img src="'+src+'" style="max-width:100%;max-height:160px;border-radius:8px;margin:6px 0">'}
+      }catch(e){}
+    }
   });
 }
 render();
