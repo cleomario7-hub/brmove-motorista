@@ -77,8 +77,8 @@ async function stopGps(){
   if(watcher){try{await BG.removeWatcher({id:watcher})}catch(e){}watcher=null}
   if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}
 }
-function go(t){dropRsv(true);tab=t;clearInterval(timer);render()}
-function logout(){dropRsv(true);if(pushTok&&token)api('/devices/remove',{method:'POST',body:{token:pushTok}}).catch(()=>{});pushStarted=false;stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
+function go(t){dropRsv(true);cdOrder=null;tab=t;clearInterval(timer);render()}
+function logout(){dropRsv(true);cdOrder=null;if(pushTok&&token)api('/devices/remove',{method:'POST',body:{token:pushTok}}).catch(()=>{});pushStarted=false;stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
 async function probe(){
   try{await api('/driver/online',{method:'POST',body:{online:false}});approved=true}
   catch(e){if(/aprovado/.test(e.message))approved=false;else throw e}
@@ -210,13 +210,14 @@ function declineRsv(){
   dropRsv(true);toast('Corrida liberada para os outros motoristas.');load();
 }
 const nav=(la,ln)=>`https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving`;
+let cdOrder=null;
 function active(o){
   const pk=o.status==='accepted';
   return `<div class="card"><div class="st">Corrida #${o.id} · ${pk?'Vá até a coleta':'Leve até a entrega'}</div>
   <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
   ${earn(o)}
   <a class="btn" target="_blank" href="${pk?nav(o.pickup_lat,o.pickup_lng):nav(o.dropoff_lat,o.dropoff_lng)}">Abrir navegação</a>
-  <button onclick="step(${o.id},'${pk?'picked_up':'delivered'}')">${pk?'Coletei o pedido':'Entreguei'}</button></div>`;
+  <button onclick="${pk?`step(${o.id},'picked_up')`:`askCode(${o.id})`}">${pk?'Coletei o pedido':'Entreguei'}</button></div>`;
 }
 let pixKey;
 function homeView(){
@@ -226,7 +227,7 @@ function homeView(){
   if(pixKey===undefined)run(async()=>{const m=await api('/driver/me');pixKey=m.pix_key||'';banner()});else banner();
   load();timer=setInterval(load,5000);
 }
-function load(){if(rsv)return;return run(async()=>{
+function load(){if(rsv||cdOrder)return;return run(async()=>{
   const mine=await api('/orders/mine');
   const act=mine.find(o=>['accepted','picked_up'].includes(o.status));
   let h;
@@ -235,10 +236,32 @@ function load(){if(rsv)return;return run(async()=>{
     const hint=av.some(o=>!o.locked)?'<div style="font-size:13px;color:var(--mut);margin:0 2px 8px">Ao tocar em <b>Escolher esta corrida</b>, ela fica reservada para você por 10 segundos.</div>':'';
     h=av.length?hint+av.map(o=>o.locked?lockedCard(o):avail(o)).join(''):'<div class="card">Nenhuma corrida no momento. Aguardando…</div>'}
   else h='<div class="card">Fique online para receber corridas.</div>';
-  if(rsv)return;
+  if(rsv||cdOrder)return;
   const el=$('#ol');if(el)el.innerHTML=h;
 })}
 function accept(id){run(async()=>{await api('/orders/'+id+'/accept',{method:'POST'});toast('Corrida aceita!');load()})}
+// ---------- confirmação da entrega com o código do cliente ----------
+function askCode(id){
+  cdOrder=id;
+  const el=$('#ol');if(!el)return;
+  el.innerHTML=`<div class="card" style="border:2px solid var(--r)"><div class="st">Confirmar entrega · Corrida #${id}</div>
+    <div style="margin:6px 0">Peça ao cliente o <b>código de entrega</b> (ele aparece no app dele) e digite abaixo.</div>
+    <input id="dc" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="Código" style="font-size:28px;letter-spacing:8px;text-align:center">
+    <button class="g" onclick="confirmDelivery()">Confirmar entrega</button>
+    <button class="s" onclick="closeCode()">Voltar</button></div>`;
+  const i=$('#dc');if(i)i.focus();
+}
+function closeCode(){cdOrder=null;load()}
+function confirmDelivery(){
+  const id=cdOrder,i=$('#dc'),code=((i&&i.value)||'').trim();
+  if(!id||busy)return;
+  if(!/^\d{4,8}$/.test(code)){toast('Digite o código de entrega do cliente');return}
+  busy=true;
+  run(async()=>{
+    await api('/orders/'+id+'/status',{method:'POST',body:{status:'delivered',code}});
+    cdOrder=null;toast('Entrega concluída!');load();
+  }).finally(()=>{busy=false});
+}
 function step(id,s){run(async()=>{await api('/orders/'+id+'/status',{method:'POST',body:{status:s}});toast(s==='delivered'?'Entrega concluída!':'Pedido coletado');load()})}
 
 function savePix(){run(async()=>{
