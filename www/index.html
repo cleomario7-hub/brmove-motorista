@@ -99,14 +99,17 @@ function render(){
 
 function loginView(reg){
   $('#app').innerHTML=`<div class="card"><div style="text-align:center;margin-bottom:6px">${BF('#D62828','#fff',72)}</div><h2>${reg?'Cadastro de motorista':'Entrar'}</h2>
-  ${reg?'<input id="nm" placeholder="Nome"><input id="ph" type="tel" placeholder="Telefone"><select id="vt"><option value="moto">Moto</option><option value="carro">Carro</option><option value="van">Van</option><option value="caminhao">Caminhão</option></select><input id="pl" placeholder="Placa do veículo">':''}
+  ${reg?'<input id="nm" placeholder="Nome"><input id="ph" type="tel" placeholder="Telefone">'+cityField('')+'<select id="vt"><option value="moto">Moto</option><option value="carro">Carro</option><option value="van">Van</option><option value="caminhao">Caminhão</option></select><input id="pl" placeholder="Placa do veículo">':''}
   <input id="em" type="email" placeholder="E-mail"><input id="pw" type="password" placeholder="Senha (mín. 6)">
   <button onclick="auth(${reg})">${reg?'Cadastrar':'Entrar'}</button>
   <button class="s" onclick="loginView(${!reg})">${reg?'Já tenho conta':'Quero ser motorista'}</button></div>`;
 }
 function auth(reg){run(async()=>{
   const b={email:$('#em').value,password:$('#pw').value};let d;
-  if(reg){Object.assign(b,{name:$('#nm').value,phone:$('#ph').value,role:'driver',vehicle_type:$('#vt').value,plate:$('#pl').value});d=await api('/auth/register',{method:'POST',body:b})}
+  if(reg){
+    const city=cityVal();
+    if(!city)throw new Error('Selecione a cidade onde você atua');
+    Object.assign(b,{name:$('#nm').value,phone:$('#ph').value,city,role:'driver',vehicle_type:$('#vt').value,plate:$('#pl').value});d=await api('/auth/register',{method:'POST',body:b})}
   else d=await api('/auth/login',{method:'POST',body:b});
   if(d.user.role!=='driver')throw new Error('Este app é para motoristas');
   token=d.token;localStorage.setItem('t',token);approved=null;tab='home';render();
@@ -335,6 +338,13 @@ function walletView(){
   });
 }
 // ---------- perfil: dados, foto e documentos ----------
+const CITIES=['Brasília','Valparaíso de Goiás','Águas Lindas de Goiás'];
+function cityField(cur){
+  cur=cur||'';const known=CITIES.includes(cur);
+  return `<select id="ct" onchange="cityChg()"><option value="">Cidade onde você atua</option>${CITIES.map(c=>`<option value="${c}" ${c===cur?'selected':''}>${c}</option>`).join('')}<option value="__outra" ${cur&&!known?'selected':''}>Outra cidade</option></select><input id="ct2" placeholder="Digite o nome da sua cidade" value="${known?'':esc(cur)}" style="${cur&&!known?'':'display:none'}">`;
+}
+function cityChg(){const o=$('#ct').value==='__outra';$('#ct2').style.display=o?'':'none';if(o)$('#ct2').focus()}
+function cityVal(){const v=$('#ct').value;return(v==='__outra'?$('#ct2').value:v).trim()}
 const VL={moto:'da moto',carro:'do carro',van:'da van',caminhao:'do caminhão'};
 const DOCS=[['documento','Documento pessoal (RG ou CPF)'],['cnh','CNH (carteira de habilitação)'],['doc_veiculo','']];
 const plateN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -373,7 +383,8 @@ function sendDoc(kind,file){run(async()=>{
   profView();
 })}
 function saveProf(){run(async()=>{
-  const b={name:$('#pn').value,phone:$('#pp').value,vehicle_type:$('#pv').value,plate:$('#pl').value};
+  const b={name:$('#pn').value,phone:$('#pp').value,city:cityVal(),vehicle_type:$('#pv').value,plate:$('#pl').value};
+  if(!b.city){toast('Selecione a cidade onde você atua');return}
   if((b.vehicle_type!==curProf.vehicle_type||plateN(b.plate)!==plateN(curProf.plate))&&!confirm('Mudar o veículo ou a placa exige nova aprovação, e você ficará offline até ser aprovado. Continuar?'))return;
   const r=await api('/driver/profile',{method:'PUT',body:b});
   if(r.reapproval){approved=false;online=false;stopGps()}
@@ -396,6 +407,7 @@ function profView(){
     <div class="card"><div class="st">Meus dados</div>
       <input id="pn" placeholder="Nome completo" value="${esc(p.name)}">
       <input id="pp" type="tel" placeholder="Telefone" value="${esc(p.phone)}">
+      ${cityField(p.city)}
       <select id="pv">${Object.keys(V).map(k=>`<option value="${k}" ${k===p.vehicle_type?'selected':''}>${V[k]}</option>`).join('')}</select>
       <input id="pl" placeholder="Placa do veículo" value="${esc(p.plate)}">
       <div style="font-size:13px;color:#6b6b6b;margin:4px 0">E-mail da conta: ${esc(p.email)}. Mudar o veículo ou a placa exige nova aprovação.</div>
