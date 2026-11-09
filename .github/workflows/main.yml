@@ -28,6 +28,9 @@ jobs:
           EOF
       - run: npx cap add android
       - run: |
+          find android/app/src/main/res -path '*mipmap*' -name 'ic_launcher*' -delete
+          cp -r resources/android/res/. android/app/src/main/res/
+      - run: |
           cp google-services.json android/app/google-services.json
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/><uses-permission android:name="android.permission.CAMERA"/><uses-feature android:name="android.hardware.camera" android:required="false"/><uses-feature android:name="android.hardware.location.gps" android:required="false"/><application#' $M
