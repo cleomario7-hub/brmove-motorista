@@ -25,6 +25,19 @@ nav a.on{color:var(--r)}
 .bar i{display:block;height:100%;width:100%;background:var(--r);transition:width .2s linear}
 .lock{opacity:.6}
 #toast{position:fixed;left:16px;right:16px;bottom:84px;background:#222;color:#fff;padding:12px;border-radius:10px;display:none;text-align:center}
+
+.chat-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.chat-actions a{flex:1;min-width:112px;text-align:center;text-decoration:none;border:1px solid var(--r);border-radius:10px;padding:10px 8px;color:var(--r);font-weight:700;background:#fff}
+.chat-box{height:300px;overflow:auto;background:#f5f5f5;border:1px solid var(--ln);border-radius:12px;padding:10px;margin:10px 0}
+.chat-msg{max-width:86%;background:#fff;border-radius:12px;padding:9px 11px;margin:7px 0;box-shadow:0 1px 2px #0001;overflow-wrap:anywhere}
+.chat-msg.me{margin-left:auto;background:#fff0ee}
+.chat-who{font-size:11px;font-weight:800;color:var(--mut);margin-bottom:3px}
+.chat-time{font-size:10px;color:var(--mut);text-align:right;margin-top:4px}
+.chat-compose{display:flex;gap:7px;align-items:flex-end}
+.chat-compose textarea{flex:1;min-width:0;margin:6px 0;resize:vertical}
+.chat-compose button{width:auto;min-width:90px;margin:6px 0}
+
+.nav-actions{display:flex;gap:8px}.nav-actions .btn{flex:1;min-width:0}.nav-actions .waze{color:#2367a8;border-color:#2367a8}
 </style></head>
 <body>
 <header><span class="lg"></span><span>BRMove <small>Motorista</small></span></header>
@@ -41,6 +54,7 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;',
 const V={moto:'🏍️ Moto',carro:'🚗 Carro',van:'🚐 Van',caminhao:'🚚 Caminhão'};
 const money=n=>'R$ '+Number(n).toFixed(2).replace('.',',');
 let token=localStorage.getItem('t'),tab='home',online=false,approved=null,timer=null,watchId=null,lastSend=0;
+let chatOrderId=null,chatLastId=0,chatTimer=null;
 
 function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3500)}
 function plug(n){
@@ -80,8 +94,8 @@ async function stopGps(){
   if(watcher){try{await BG.removeWatcher({id:watcher})}catch(e){}watcher=null}
   if(watchId!=null){navigator.geolocation.clearWatch(watchId);watchId=null}
 }
-function go(t){dropRsv(true);cdOrder=null;tab=t;clearInterval(timer);render()}
-function logout(){dropRsv(true);cdOrder=null;if(pushTok&&token)api('/devices/remove',{method:'POST',body:{token:pushTok}}).catch(()=>{});pushStarted=false;stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
+function go(t){dropRsv(true);cdOrder=null;clearInterval(chatTimer);chatTimer=null;chatOrderId=null;chatLastId=0;tab=t;clearInterval(timer);render()}
+function logout(){dropRsv(true);cdOrder=null;clearInterval(chatTimer);chatTimer=null;chatOrderId=null;if(pushTok&&token)api('/devices/remove',{method:'POST',body:{token:pushTok}}).catch(()=>{});pushStarted=false;stopGps();clearInterval(timer);token=null;approved=null;online=false;localStorage.removeItem('t');render()}
 async function probe(){
   try{await api('/driver/online',{method:'POST',body:{online:false}});approved=true}
   catch(e){if(/aprovado/.test(e.message))approved=false;else throw e}
@@ -216,13 +230,16 @@ function declineRsv(){
   dropRsv(true);toast('Corrida liberada para os outros motoristas.');load();
 }
 const nav=(la,ln)=>`https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving`;
+const waze=(la,ln)=>`https://waze.com/ul?ll=${encodeURIComponent(la+','+ln)}&navigate=yes`;
 let cdOrder=null;
 function active(o){
   const pk=o.status==='accepted';
+  const la=pk?o.pickup_lat:o.dropoff_lat,ln=pk?o.pickup_lng:o.dropoff_lng;
   return `<div class="card"><div class="st">Corrida #${o.id} · ${pk?'Vá até a coleta':'Leve até a entrega'}</div>
   <div>📍 ${esc(o.pickup_address)}</div><div>🏁 ${esc(o.dropoff_address)}</div>${o.notes?`<div>📝 ${esc(o.notes)}</div>`:''}
   ${earn(o)}
-  <a class="btn" target="_blank" href="${pk?nav(o.pickup_lat,o.pickup_lng):nav(o.dropoff_lat,o.dropoff_lng)}">Abrir navegação</a>
+  <div class="nav-actions"><a class="btn" target="_blank" rel="noopener" href="${nav(la,ln)}">🗺️ Google Maps</a><a class="btn waze" target="_blank" rel="noopener" href="${waze(la,ln)}">🚙 Waze</a></div>
+  <button class="s" onclick="openChat(${o.id})">Mensagens e contato</button>
   <button onclick="${pk?`step(${o.id},'picked_up')`:`askCode(${o.id})`}">${pk?'Coletei o pedido':'Entreguei'}</button></div>`;
 }
 let pixKey;
@@ -233,7 +250,7 @@ function homeView(){
   if(pixKey===undefined)run(async()=>{const m=await api('/driver/me');pixKey=m.pix_key||'';banner()});else banner();
   load();timer=setInterval(load,5000);
 }
-function load(){if(rsv||cdOrder)return;return run(async()=>{
+function load(){if(rsv||cdOrder||chatOrderId)return;return run(async()=>{
   const mine=await api('/orders/mine');
   const act=mine.find(o=>['accepted','picked_up'].includes(o.status));
   let h;
@@ -246,6 +263,60 @@ function load(){if(rsv||cdOrder)return;return run(async()=>{
   const el=$('#ol');if(el)el.innerHTML=h;
 })}
 function accept(id){run(async()=>{await api('/orders/'+id+'/accept',{method:'POST'});toast('Corrida aceita!');load()})}
+
+// ---------- chat e contato da corrida ----------
+function phoneLinks(phone,id){
+  let digits=String(phone||'').replace(/\D/g,'').replace(/^0+/,'');
+  if(digits&&!digits.startsWith('55'))digits='55'+digits;
+  if(!digits||digits.length<12||digits.length>13)return '<div style="font-size:13px;color:#6b6b6b">Telefone não cadastrado para este contato.</div>';
+  const msg=encodeURIComponent('Olá! Estou falando sobre a corrida #'+id+' no BRMove.');
+  return `<div class="chat-actions"><a href="tel:+${digits}">📞 Ligar</a><a href="https://wa.me/${digits}?text=${msg}" target="_blank" rel="noopener">🟢 WhatsApp</a></div>`;
+}
+function chatTime(value){const d=new Date(value);return Number.isNaN(d.getTime())?'':d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
+function appendChatMessages(items){
+  const box=$('#chatMessages');if(!box)return;
+  const empty=box.querySelector('[data-empty-chat]');if(empty)empty.remove();
+  for(const m of items){
+    const id=Number(m.id);if(!Number.isFinite(id)||id<=chatLastId)continue;
+    const el=document.createElement('div');el.className='chat-msg'+(m.is_mine?' me':'');
+    el.innerHTML=`<div class="chat-who">${m.is_mine?'Você':esc(m.sender_name||'Contato')}</div><div>${esc(m.message)}</div><div class="chat-time">${esc(chatTime(m.created_at))}</div>`;
+    box.appendChild(el);chatLastId=id;
+  }
+  if(items.length)box.scrollTop=box.scrollHeight;
+  if(!box.querySelector('.chat-msg'))box.innerHTML='<div data-empty-chat style="text-align:center;color:#6b6b6b;font-size:13px;padding:20px">Nenhuma mensagem ainda. Comece a conversa.</div>'; 
+}
+async function refreshChat(){
+  if(!chatOrderId)return;
+  const id=chatOrderId;
+  const rows=await api('/orders/'+id+'/messages?after='+chatLastId);
+  if(chatOrderId===id)appendChatMessages(rows);
+}
+function openChat(id){
+  clearInterval(timer);clearInterval(chatTimer);chatOrderId=Number(id);chatLastId=0;
+  const current=chatOrderId;
+  $('#app').innerHTML=`<div class="card"><div class="st">Conversa da corrida #${current}</div><div id="chatContact">Carregando contato…</div><div id="chatMessages" class="chat-box"></div><div class="chat-compose"><textarea id="chatInput" rows="2" maxlength="1000" placeholder="Digite sua mensagem"></textarea><button id="chatSend" onclick="sendChatMessage()">Enviar</button></div><button class="s" onclick="closeChat()">Voltar para corridas</button></div>`;
+  run(async()=>{
+    const [contact,messages]=await Promise.all([api('/orders/'+current+'/contact'),api('/orders/'+current+'/messages')]);
+    if(chatOrderId!==current)return;
+    $('#chatContact').innerHTML=`<b>${esc(contact.name||'Contato da corrida')}</b>${phoneLinks(contact.phone,current)}`;
+    appendChatMessages(messages);
+    chatTimer=setInterval(()=>{refreshChat().catch(e=>{if(e.message==='Não autenticado')logout()})},3000);
+  });
+}
+function sendChatMessage(){
+  const input=$('#chatInput'),button=$('#chatSend');
+  if(!input||!chatOrderId)return;
+  const message=input.value.trim();if(!message){toast('Digite uma mensagem');return}
+  if(button)button.disabled=true;
+  run(async()=>{
+    const id=chatOrderId;
+    const sent=await api('/orders/'+id+'/messages',{method:'POST',body:{message}});
+    if(chatOrderId!==id)return;
+    input.value='';appendChatMessages([sent]);
+  }).finally(()=>{if(button&&button.isConnected)button.disabled=false});
+}
+function closeChat(){clearInterval(chatTimer);chatTimer=null;chatOrderId=null;chatLastId=0;go('home')}
+
 // ---------- confirmação da entrega com o código do cliente ----------
 function askCode(id){
   cdOrder=id;
