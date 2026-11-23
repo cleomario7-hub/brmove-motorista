@@ -1,0 +1,31 @@
+name: Criar chave de assinatura (rodar UMA vez)
+# Gera a chave do app e entrega em um artefato para você baixar e guardar.
+# ATENÇÃO: use SOMENTE se este repositório for PRIVADO. Baixe o artefato e apague-o depois.
+# Antes de rodar, cadastre o secret KEYSTORE_PASSWORD (Settings > Secrets and variables > Actions).
+on:
+  workflow_dispatch:
+jobs:
+  chave:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Gerar chave
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_PASSWORD" || { echo "Cadastre o secret KEYSTORE_PASSWORD antes."; exit 1; }
+          keytool -genkeypair -v -keystore brmove-motorista.jks -storetype PKCS12 \
+            -alias brmove -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" \
+            -dname "CN=BRMove Motorista, O=BRMove, C=BR"
+          base64 -w0 brmove-motorista.jks > brmove-motorista.jks.base64.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chave-brmove-motorista
+          path: |
+            brmove-motorista.jks
+            brmove-motorista.jks.base64.txt
+          retention-days: 1

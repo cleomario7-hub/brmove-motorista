@@ -1,0 +1,66 @@
+name: Build AAB Play (motorista)
+# Gera o arquivo .aab ASSINADO para enviar ao Google Play.
+# Rode manualmente: aba Actions > "Build AAB Play (motorista)" > Run workflow.
+# O workflow antigo "Build APK" continua igual e segue gerando o APK para o site.
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm install @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor-community/background-geolocation@1 @capacitor/local-notifications@8 @capacitor/push-notifications@8
+      - run: |
+          cat > capacitor.config.json <<'EOF2'
+          {
+            "appId": "br.com.fretesbsb.motorista",
+            "appName": "BRMove Motorista",
+            "webDir": "www",
+            "android": { "useLegacyBridge": true },
+            "plugins": { "CapacitorHttp": { "enabled": true } }
+          }
+          EOF2
+      - run: npx cap add android
+      - name: Conferir que o app mira a API 36
+        run: |
+          grep -n "targetSdkVersion\|compileSdkVersion" android/variables.gradle
+          grep -Eq "targetSdkVersion[[:space:]]*=?[[:space:]]*36" android/variables.gradle
+      - run: |
+          find android/app/src/main/res -path '*mipmap*' -name 'ic_launcher*' -delete
+          cp -r resources/android/res/. android/app/src/main/res/
+      - run: |
+          cp google-services.json android/app/google-services.json
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/><uses-permission android:name="android.permission.CAMERA"/><uses-feature android:name="android.hardware.camera" android:required="false"/><uses-feature android:name="android.hardware.location.gps" android:required="false"/><application#' $M
+          sed -i 's#</application>#<service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="true" android:foregroundServiceType="location"/></application>#' $M
+      - name: Número da versão (o Google exige um número maior a cada envio)
+        run: |
+          sed -i -E "s/(versionCode[[:space:]]*=?[[:space:]]*)[0-9]+/\1${{ github.run_number }}/" android/app/build.gradle
+          grep -n "versionCode\|versionName" android/app/build.gradle
+      - run: npx cap sync android
+      - run: ./gradlew bundleRelease
+        working-directory: android
+      - name: Assinar o AAB
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          jarsigner -keystore "$RUNNER_TEMP/release.jks" \
+            -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            android/app/build/outputs/bundle/release/app-release.aab "$KEY_ALIAS"
+          jarsigner -verify android/app/build/outputs/bundle/release/app-release.aab
+          rm -f "$RUNNER_TEMP/release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brmove-motorista-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
