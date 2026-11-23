@@ -38,8 +38,11 @@ jobs:
       - run: |
           cp google-services.json android/app/google-services.json
           M=android/app/src/main/AndroidManifest.xml
-          sed -i 's#<application#<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/><uses-permission android:name="android.permission.CAMERA"/><uses-feature android:name="android.hardware.camera" android:required="false"/><uses-feature android:name="android.hardware.location.gps" android:required="false"/><application#' $M
+          grep -q 'xmlns:tools' $M || sed -i '0,/<manifest/s#<manifest#<manifest xmlns:tools="http://schemas.android.com/tools"#' $M
+          sed -i 's#<application#<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/><uses-permission android:name="android.permission.CAMERA"/><uses-feature android:name="android.hardware.camera" android:required="false" tools:node="replace"/><uses-feature android:name="android.hardware.location.gps" android:required="false" tools:node="replace"/><application#' $M
           sed -i 's#</application>#<service android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService" android:enabled="true" android:exported="true" android:foregroundServiceType="location"/></application>#' $M
+          echo "=== Manifesto do app ==="
+          grep -o 'uses-feature[^>]*' $M
       - name: Número da versão (o Google exige um número maior a cada envio)
         run: |
           sed -i -E "s/(versionCode[[:space:]]*=?[[:space:]]*)[0-9]+/\1${{ github.run_number }}/" android/app/build.gradle
@@ -47,6 +50,11 @@ jobs:
       - run: npx cap sync android
       - run: ./gradlew bundleRelease
         working-directory: android
+      - name: Conferir GPS no manifesto final
+        run: |
+          F=$(find android/app/build/intermediates -name AndroidManifest.xml | grep -i release | head -1)
+          echo "Arquivo: $F"
+          grep -B1 -A3 "location.gps" "$F" || true
       - name: Assinar o AAB
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
